@@ -1,0 +1,50 @@
+#!/usr/bin/env ruby
+require 'optparse'
+require 'github_api'
+require 'hipchat'
+
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: test [options]"
+
+  opts.on("-oORG", "--org=ORG", "Organisation name") do |o|
+    options[:org] = o
+  end
+  opts.on("-tTEAM", "--team=TEAM", "Team name") do |t|
+    options[:team] = t
+  end
+  opts.on("-rROOM", "--room=ROOM", "HipChat room") do |r|
+    options[:room] = r
+  end
+end.parse!
+
+[:org, :team, :room].each do |arg|
+  raise OptionParser::MissingArgument.new(arg) unless options.include?(arg)
+end
+
+github = Github.new auto_pagination: true, oauth_token: ENV['GH_TOKEN']
+hipchat = HipChat::Client.new(ENV['HC_TOKEN'], :api_version => 'v2')
+
+teams = github.orgs.teams.list org: options[:org]
+target_team = teams.body.select {|team| team.slug == options[:team]}
+
+repos = github.orgs.teams.list_repos target_team[0].id
+
+repos.each do |repo|
+  pull_requests = github.pull_requests.list options[:org], repo.name
+
+  messages = pull_requests.sort_by(&:number).map do |pr|
+    if pr.assignee
+      "<a href='#{pr.html_url}'>##{pr.number}: ‘#{pr.title}’</a> " \
+      "by #{pr.user.login}, assigned to #{pr.assignee.login}"
+    else
+      "<a href='#{pr.html_url}'>##{pr.number}: ‘#{pr.title}’</a> " \
+      "by #{pr.user.login}"
+    end
+  end
+
+  hipchat[options[:room]].send('', [
+    "<b>#{repo.name}</b> has these open PRs:", *messages
+  ].join("<br />"),
+  :color => 'gray') unless messages.empty?
+end
